@@ -1,0 +1,7 @@
+# The bundle layer for this plugin: a profile that lists this package in
+# `dsh.profile.bundles` (what `dsh plugin add dsh-math-render` writes) inserts
+# this row at boot. The row names the package rather than a path, because a
+# bundle layer resolves every row name against the bundle's own directory.
+- insert:
+    - id: math-render
+      name: dsh-math-render

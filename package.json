@@ -1,0 +1,57 @@
+{
+  "name": "dsh-math-render",
+  "version": "1.0.0",
+  "description": "Render LaTeX in the DSH web chat: formulas inside your own message bubble, and a live preview of the composer draft while you type.",
+  "type": "module",
+  "license": "MIT",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "engines": {
+      "dsh": ">=0.1.5-rc.1"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "client.js",
+    "cordis.patch.yml",
+    "index.js",
+    "package.json",
+    "test.mjs"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "latex",
+    "katex",
+    "math",
+    "markdown"
+  ],
+  "scripts": {
+    "test": "node test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huanglianqi/dsh-math-render.git"
+  },
+  "homepage": "https://github.com/huanglianqi/dsh-math-render#readme",
+  "bugs": {
+    "url": "https://github.com/huanglianqi/dsh-math-render/issues"
+  },
+  "devDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}
