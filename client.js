@@ -43,8 +43,31 @@ var FileTypeIcon = primitives.FileTypeIcon
 var fileExtension = primitives.fileExtension
 var fileSizeText = primitives.fileSizeText
 var Tooltip = primitives.Tooltip
-var IconCopyOutline16 = primitives.IconCopyOutline16
-var IconCheckOutline16 = primitives.IconCheckOutline16
+/**
+ * Icon seats. client-ui renamed the fixed-16px icon variants to size-semantic
+ * ones in 0.2.x (`IconCopyOutline16` -> `IconCopyOutlineRegular`), so resolve by
+ * capability across both generations -- and NEVER hand React an undefined
+ * component: the slot boundary abdicates this renderer when it throws, which
+ * silently hands every user bubble back to the shipped renderer. That failure
+ * is invisible on plain-text messages (identical output) and only shows up when
+ * a message carries TeX.
+ */
+function resolveIcon() {
+  for (var i = 0; i < arguments.length; i += 1) {
+    if (typeof arguments[i] === "function") return arguments[i]
+  }
+  return function () { return null }
+}
+var IconCopyOutline16 = resolveIcon(
+  primitives.IconCopyOutline16,
+  primitives.IconCopyOutlineRegular,
+  primitives.IconCopyOutlineMedium
+)
+var IconCheckOutline16 = resolveIcon(
+  primitives.IconCheckOutline16,
+  primitives.IconCheckOutlineRegular,
+  primitives.IconCheckOutlineMedium
+)
 var writeClipboard = primitives.writeClipboard
 
 var h = React.createElement

@@ -337,6 +337,89 @@ if (SlotCore === undefined) {
   })
 }
 
+//#region client-ui 0.2.x compatibility (icon seats renamed)
+
+/**
+ * client-ui 0.2.x renamed the fixed-size icon seats
+ * (`IconCopyOutline16` -> `IconCopyOutlineRegular` / `...Medium`).
+ *
+ * The bundle used to read the old names straight off the primitives table, so
+ * on 0.2.x `BubbleActions` handed React an `undefined` component. React threw,
+ * the slot boundary abdicated the entry, and the shipped user bubble took the
+ * cell back: `$...$` rendered literally, while the draft preview (a different
+ * seat, no icons) kept working. A plain-text bubble renders byte-for-byte
+ * identically either way, so the breakage stayed invisible until a message
+ * carried TeX.
+ *
+ * The stub in the region above still ships the 0.1.x names, which is precisely
+ * why it could not catch this. These cases re-load the bundle against a
+ * 0.2.x-shaped table, and against a table with no icon seats at all.
+ */
+
+function loadUserSeat(primitivesTable) {
+  let registration
+  const sandbox = {
+    window: { __ModuleLoader__: { load: (value) => { registration = value } } },
+    console
+  }
+  vm.createContext(sandbox)
+  vm.runInContext(source, sandbox, { filename: 'client.js' })
+  const loaded = registration.factory((spec) => {
+    if (spec === 'react') return React
+    if (spec === '@deepseek-ai/dsh-client-ui-primitives') return primitivesTable
+    throw new Error(`unexpected require("${spec}")`)
+  })
+  const seats = []
+  loaded.apply({
+    slots: {
+      inject: (key, callback) => callback(),
+      register: (options, component) => { seats.push({ options, component }); return () => {} }
+    }
+  })
+  const seat = seats.find((entry) => entry.options.name === 'conversation.chat.node' && entry.options.key === 'user')
+  assert.ok(seat, 'the user seat is registered against the given primitives table')
+  return seat
+}
+
+function renderWith(seat, text) {
+  return renderToStaticMarkup(React.createElement(seat.component, {
+    t,
+    renderMessageImages: () => null,
+    node: { data: { content: [{ type: 'text', text }], time: undefined } }
+  }))
+}
+
+const primitives02x = Object.assign({}, primitives, {
+  IconCopyOutline16: undefined,
+  IconCheckOutline16: undefined,
+  IconCopyOutlineRegular: () => React.createElement('i'),
+  IconCheckOutlineRegular: () => React.createElement('i')
+})
+
+const seat02x = loadUserSeat(primitives02x)
+
+test('0.2.x icon names: a math bubble still routes through MarkdownText', () => {
+  const html = renderWith(seat02x, '设 $a^2+b^2=c^2$ 成立')
+  assert.ok(html.includes('data-md'), 'the math segment reached the shell renderer')
+  assert.ok(html.includes('dshmr_inlineMath'), 'inline math still renders inline')
+  assert.ok(html.includes('dshmr_bubble'), 'the plugin renderer still owns the bubble')
+})
+
+test('0.2.x icon names: a plain bubble still renders', () => {
+  const html = renderWith(seat02x, 'no math here')
+  assert.ok(html.includes('plain'), 'prose still goes through the shipped projection')
+})
+
+const seatNoIcons = loadUserSeat(Object.assign({}, primitives, {
+  IconCopyOutline16: undefined,
+  IconCheckOutline16: undefined
+}))
+
+test('no icon seat at all degrades instead of crashing', () => {
+  const html = renderWith(seatNoIcons, '$x$')
+  assert.ok(html.includes('dshmr_inlineMath'), 'the bubble still renders math with no icon seat available')
+})
+
 //#endregion
 
 if (failures.length > 0) {

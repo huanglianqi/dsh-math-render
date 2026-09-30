@@ -1,6 +1,6 @@
 {
   "name": "dsh-math-render",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Render LaTeX in the DSH web chat: formulas inside your own message bubble, and a live preview of the composer draft while you type.",
   "type": "module",
   "license": "MIT",
