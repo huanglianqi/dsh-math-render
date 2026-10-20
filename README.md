@@ -29,23 +29,26 @@ Same mechanism: the package declares a `dsh.bundle` layer, so `dsh plugin add` r
 
 | Seat | What it does | Why that seat |
 |---|---|---|
-| `conversation.chat.node`, keys `user` and `steering`, at `priority: -1` | Shadows the shipped user-bubble renderer. The bubble keeps its shipped shape — same DOM, same geometry, same attachments, same copy action. Only TeX runs are handed to the shell's own `MarkdownText`, the renderer assistant replies use | The slot registry projects one winner per cell in ascending priority order, so `-1` outranks the shipped `0`. The registry's own error text documents the route: *register at a different priority to shadow it (lowest renders)* |
+| `conversation.user.text.node`, key `math`, `priority: 100` | Renders one TeX run through the shell's own `MarkdownText`, the same KaTeX pipeline assistant replies use | ui-conversation 0.2.1 parses a user message into JSON nodes with pure rules and dispatches each node to a keyed inline renderer. `math` is a free key, so the shipped `text`, `session`, `skill`, `command`, `file`, `folder` and `secret` nodes keep their own cells |
+| a `math` rule in `uiConversation.userText` at `order: 40` | Turns `$...$`, `$$...$$`, `\(...\)` and `\[...\]` spans into those nodes | The rule registry is the intended pre-render seam: it is pure, revision-tracked, and a failing rule leaves the whole message as plain text |
 | `conversation.input.dock`, id `math-preview`, `order: 5` | The draft preview strip above the composer | That seat is a session-scoped list seat rendered with the input snapshot (`draft` included), so no internal service has to be reached; `order: 5` keeps it ahead of the shipped queue dock at `20` |
 
 The host half is a package anchor plus one read-only diagnostic route. It holds no state and touches nothing at boot.
 
+This plugin used to shadow `conversation.chat.node` and rebuild the whole user bubble from copied CSS. 0.2.1 removed the `projectUserText` primitive that approach depended on, so 2.0.0 moved to the user-text extension point instead: the shipped bubble keeps its own DOM, geometry, attachments, copy action, reference chips and secret masking, and only the formula spans are handed to the shell renderer.
+
 ## Behaviour
 
-- **A message without TeX renders exactly as the shipped bubble did.** Prose still goes through the shell's plain-text projection, so it is not Markdown-ified: `*`, `#` and backticks keep their literal meaning.
+- **A message without TeX renders exactly as the shipped bubble does.** The message is still parsed and rendered by the shipped user-text document and plain-text run; the plugin only adds one node key.
 - **Backticks are the escape hatch.** TeX inside a fenced code block or an inline code span stays literal, and so does `\$`.
 - **Currency is not mistaken for math.** `costs $5 and $10` stays prose: a closing `$` glued to a digit is refused, as is space-padded content.
 - **Bad TeX is not hidden.** It goes to the shell renderer, so a syntax error shows KaTeX's error output, exactly as in an assistant reply.
-- **A crashing renderer falls back to the shipped bubble.** The slot boundary contains entry crashes and abdicates the entry from its cell, so the worst case is "no effect", not a broken transcript.
+- **A failing rule or renderer falls back to raw text.** The user-text document keeps the whole original message as plain text when a rule throws, and the slot boundary contains a crashing node renderer, so the worst case is "no effect", not a broken transcript or a missing bubble.
 - **No preview on the new-session hero composer.** The host renders that seat only for a bound session; it appears once the first message puts you inside the conversation.
 
 ## Limitations
 
-- **The bubble geometry is copied CSS.** Those sheets are CSS modules whose hashed class names no out-of-tree bundle can resolve, and the client module table exposes no `ui-chat` component. An accurate restyle of the shell will not reach these declarations, so the bubble keeps the geometry of the build it was copied from. Colours, fonts and spacing ride `--dsw-*` / `--dsh-*` custom properties, which the shell still owns. Removing the plugin restores the shipped bubble exactly.
+- **Requires dsh 0.2.1-rc.1 or newer.** The `uiConversation.userText` rule registry and the `conversation.user.text.node` seat were introduced there. On an older shell the plugin stays inert.
 - **The composer preview is a preview, not inline WYSIWYG.** The composer is a Lexical editor and the plugin seams expose no inline widget. Typing `$x^2$` renders in the strip above the input, not inside the editable area.
 - **`dsh.bundle` and a hand-written `file://` row are mutually exclusive.** Two active Loader sources for one package name is an error; install it one way.
 
@@ -53,7 +56,7 @@ The host half is a package anchor plus one read-only diagnostic route. It holds 
 
 ```sh
 curl -s http://127.0.0.1:<port>/plugin/math-render/status
-# {"plugin":"dsh-math-render","version":"1.0.0","mounted":true,"clientRegistered":true,"clientBundle":"…/client.js"}
+# {"plugin":"dsh-math-render","version":"2.0.0","mounted":true,"clientRegistered":true,"clientBundle":"…/client.js"}
 ```
 
 Loopback `Host` only. `mounted` proves the row resolved; `clientRegistered` proves the browser half is in the client module graph. In the page console, `document.querySelector('style[data-plugin-css="dsh-math-render/styles.css"]')` is non-null once the browser half has loaded.
@@ -65,11 +68,11 @@ npm install
 npm test
 ```
 
-No harness, no browser, no network. 27 assertions over the tokenizer (delimiters, display math across lines, currency and code-span refusals, plus the invariant that segments must reconstruct the source exactly), the shapes both seats are registered with, the components (TeX routes to `MarkdownText`, a mathless message never reaches it, malformed nodes degrade instead of throwing, the preview's zero footprint), and — when the shell's own slot registry is reachable — the shadowing semantics, including that abdication hands the cell back to the shipped bubble.
+No harness, no browser, no network. 36 assertions over the tokenizer (delimiters, display math across lines, currency and code-span refusals, exact source ranges), the `math` rule's candidate contract, the shapes both seats are registered with, the components (TeX routes to `MarkdownText`, ranges and malformed nodes degrade instead of throwing, the preview's zero footprint), and — when the shell's own slot registry is reachable — that the `math` key occupies one cell without displacing the shipped keys.
 
 ## Compatibility
 
-Written and verified against **dsh 0.1.5-rc.2** (client packages `0.1.5-rc.2`, DSH Desktop 2.0.13). Seat names, priority shadowing, the `projectUserText` / `MarkdownText` / `writeClipboard` primitives, and the `conversation.input.dock` render props were read out of that version's sources. Newer shell versions may move any of them.
+Written and verified against **dsh 0.2.1-rc.2** (client packages `0.2.1-rc.2`, DSH Desktop 2.0.18). The `uiConversation.userText` rule contract, the keyed `conversation.user.text.node` seat, the free `math` key, and the `conversation.input.dock` render props were read out of that version's sources. Newer shell versions may move any of them.
 
 ## License
 

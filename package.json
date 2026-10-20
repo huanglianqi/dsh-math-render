@@ -1,6 +1,6 @@
 {
   "name": "dsh-math-render",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "Render LaTeX in the DSH web chat: formulas inside your own message bubble, and a live preview of the composer draft while you type.",
   "type": "module",
   "license": "MIT",
@@ -12,7 +12,7 @@
   },
   "dsh": {
     "engines": {
-      "dsh": ">=0.1.5-rc.1"
+      "dsh": ">=0.2.1-rc.1"
     },
     "bundle": {
       "patch": "./cordis.patch.yml"

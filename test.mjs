@@ -2,12 +2,12 @@
  * Offline test for dsh-math-render's browser half.
  *
  * No harness, no browser, no network: the bundle is executed against a React
- * stub, a primitives stub and a slot-registry stub, through the real
+ * stub, a primitives stub and a service/slot stub, through the real
  * `__ModuleLoader__.load` handshake, so the assertions cover the parts that a
- * typo would break silently in the browser (tokenizer, seat registrations,
- * component props, and the no-math pass-through).
+ * typo would break silently in the browser (tokenizer, the user-text rule,
+ * seat registrations, and the components).
  *
- * `npm install` first: the render assertions use real React, and the shadowing
+ * `npm install` first: the render assertions use real React, and the keyed-seat
  * assertion uses the shell's own slot registry when it can be found.
  */
 import { readFileSync } from 'node:fs'
@@ -52,18 +52,7 @@ vm.runInContext(source, sandbox, { filename: 'client.js' })
 assert.equal(registration.id, 'dsh-math-render', 'bundle registers under the package name the host row id is')
 
 const MarkdownText = (props) => React.createElement('md', { 'data-md': true }, props.text)
-const primitives = {
-  MarkdownText,
-  projectUserText: (text) => [React.createElement('plain', { key: 'p' }, text)],
-  JsonBlock: () => React.createElement('json'),
-  FileTypeIcon: () => React.createElement('icon'),
-  fileExtension: (name) => String(name).split('.').pop() ?? '',
-  fileSizeText: (bytes) => `${bytes} B`,
-  Tooltip: (props) => props.children,
-  IconCopyOutline16: () => React.createElement('i'),
-  IconCheckOutline16: () => React.createElement('i'),
-  writeClipboard: async () => true
-}
+const primitives = { MarkdownText }
 
 const mod = registration.factory((spec) => {
   if (spec === 'react') return React
@@ -71,7 +60,7 @@ const mod = registration.factory((spec) => {
   throw new Error(`unexpected require("${spec}") — the shell module table has no such entry`)
 })
 
-const { splitMath, hasMath } = mod.internals
+const { splitMath, nextMath, hasMath, MATH_RULE, MathTextNode, STYLE_TEXT } = mod.internals
 
 //#endregion
 
@@ -139,11 +128,40 @@ test('segments reconstruct the source exactly', () => {
     '$$',
     '$',
     '``',
-    '~~~\n$z$\n~~~'
+    '~~~\n$z$\n~~~',
+    '中文 $x$ 与 $$y$$ 和 `$z$`'
   ]
   for (const sample of samples) {
     assert.equal(splitMath(sample).map((s) => s.text).join(''), sample, `round trip: ${JSON.stringify(sample)}`)
   }
+})
+
+test('ranges stay contiguous and slice back to their own text', () => {
+  const sample = '前 $x$ 中 $$y$$ 后 `$z$` 尾 $w$'
+  const segments = splitMath(sample)
+  let cursor = 0
+  for (const segment of segments) {
+    assert.equal(segment.start, cursor, 'the next segment starts where the previous ended')
+    assert.ok(segment.end > segment.start, 'a segment is nonempty')
+    assert.equal(sample.slice(segment.start, segment.end), segment.text, 'text and range agree')
+    cursor = segment.end
+  }
+  assert.equal(cursor, sample.length, 'the last segment ends at the end of the message')
+})
+
+test('nextMath finds the nearest run at or after the cursor', () => {
+  const text = 'a $x$ b $y$ c'
+  const first = nextMath(text, 0)
+  const second = nextMath(text, first.end)
+  assert.equal(first.text, '$x$')
+  assert.equal(second.text, '$y$')
+  assert.equal(nextMath(text, second.end), undefined)
+})
+
+test('nextMath still refuses dollars inside a code span opened before the cursor', () => {
+  const text = '`code $x$` $y$'
+  const math = nextMath(text, 1)
+  assert.equal(math.text, '$y$', 'the tokenizer restarts at zero, so the span suppresses the first dollar')
 })
 
 test('hasMath reports the token kinds', () => {
@@ -154,127 +172,197 @@ test('hasMath reports the token kinds', () => {
 
 //#endregion
 
+//#region The user-text rule
+
+test('the rule identifies itself as the free math key', () => {
+  assert.equal(MATH_RULE.id, 'math')
+  assert.ok(Number.isFinite(MATH_RULE.order))
+})
+
+test('inline math becomes one candidate with its delimiters', () => {
+  const text = '设 $a^2+b^2=c^2$ 成立'
+  const candidate = MATH_RULE.match(text, 0)
+  assert.equal(candidate.id, 'math')
+  assert.equal(candidate.start, 2)
+  assert.equal(candidate.end, 2 + '$a^2+b^2=c^2$'.length)
+  assert.equal(candidate.data.tex, '$a^2+b^2=c^2$')
+  assert.equal(candidate.data.display, false)
+  assert.equal(text.slice(candidate.start, candidate.end), candidate.data.tex)
+})
+
+test('display math marks the display layout', () => {
+  const candidate = MATH_RULE.match('前 $$x^2$$ 后', 0)
+  assert.equal(candidate.data.display, true)
+  assert.equal(candidate.data.tex, '$$x^2$$')
+})
+
+test('the rule skips a leading match already behind the cursor', () => {
+  const text = '$x$ and $y$'
+  const first = MATH_RULE.match(text, 0)
+  const second = MATH_RULE.match(text, first.end)
+  assert.equal(second.data.tex, '$y$')
+  assert.equal(MATH_RULE.match(text, second.end), undefined)
+})
+
+test('prose and code produce no candidate', () => {
+  assert.equal(MATH_RULE.match('costs $5 and $10', 0), undefined)
+  assert.equal(MATH_RULE.match('write `$x$` for math', 0), undefined)
+  assert.equal(MATH_RULE.match('```\n$x$\n```\n', 0), undefined)
+  assert.equal(MATH_RULE.match('', 0), undefined)
+})
+
+test('a candidate is a range the user-text document will accept', () => {
+  for (const text of ['$x$', 'a $$y$$ b', '\\(z\\)', '\\[w\\]']) {
+    for (let from = 0; from < text.length; from += 1) {
+      const candidate = MATH_RULE.match(text, from)
+      if (candidate === undefined) continue
+      assert.equal(candidate.id, 'math')
+      assert.ok(Number.isInteger(candidate.start) && Number.isInteger(candidate.end))
+      assert.ok(candidate.start >= from, 'start is not behind the cursor')
+      assert.ok(candidate.end > candidate.start, 'range is nonempty')
+      assert.ok(candidate.end <= text.length, 'range stays inside the text')
+      assert.equal(text.slice(candidate.start, candidate.end), candidate.data.tex)
+    }
+  }
+})
+
+//#endregion
+
 //#region Seat registration
 
-const injected = []
-const registrations = []
-const fakeCtx = {
-  slots: {
-    inject(key, callback) {
-      injected.push(key)
-      return callback()
+function boot(options = {}) {
+  const injected = []
+  const registrations = []
+  const rules = []
+  const effects = []
+  const ctx = {
+    slots: {
+      inject(key, callback) {
+        injected.push(key)
+        return callback()
+      },
+      register(options, component) {
+        registrations.push({ options, component })
+        return () => {}
+      }
     },
-    register(options, component) {
-      registrations.push({ options, component })
+    uiConversation: {
+      userText: {
+        register(rule) {
+          if (options.duplicateRule) throw new Error('user-text rule "math" is already registered')
+          rules.push(rule)
+          return () => {}
+        }
+      }
+    },
+    effect(callback, label) {
+      effects.push({ label, dispose: callback() })
       return () => {}
     }
   }
+  mod.apply(ctx)
+  return { injected, registrations, rules, effects }
 }
-mod.apply(fakeCtx)
 
-test('declares name and the slots service', () => {
+const booted = boot()
+
+test('declares the two services it actually uses', () => {
   assert.equal(mod.name, 'math-render')
-  assert.deepEqual(Array.from(mod.inject), ['slots'], 'cross-realm array: compare by value')
+  assert.deepEqual(Array.from(mod.inject), ['slots', 'uiConversation'], 'cross-realm array: compare by value')
 })
 
-test('shadows both user bubble kinds at priority -1', () => {
-  const bubbleSeats = registrations.filter((entry) => entry.options.name === 'conversation.chat.node')
-  assert.deepEqual(bubbleSeats.map((entry) => entry.options.key), ['user', 'steering'])
-  for (const seat of bubbleSeats) {
-    assert.equal(seat.options.priority, -1, 'priority -1 is what shadows the shipped 0')
-    assert.equal(seat.options.locale, 'chat', 'the chat namespace carries copy/copied/clock keys')
-    assert.equal(typeof seat.component, 'function')
-  }
+test('registers exactly one math rule, through an effect', () => {
+  assert.equal(booted.rules.length, 1, 'one rule registration')
+  assert.equal(booted.rules[0], MATH_RULE)
+  assert.equal(booted.effects.length, 1, 'the rule is owned by an effect')
+  assert.equal(typeof booted.effects[0].dispose, 'function', 'the registration disposer is retained')
+})
+
+test('registers the math node in the shipped user-text factory', () => {
+  const seat = booted.registrations.find((entry) => entry.options.name === 'conversation.user.text.node')
+  assert.ok(seat, 'math node seat registered')
+  assert.equal(seat.options.key, 'math')
+  assert.equal(seat.options.priority, 100, 'matches the shipped node priorities')
+  assert.equal(typeof seat.component, 'function')
 })
 
 test('registers the composer preview ahead of the queue dock', () => {
-  const dock = registrations.find((entry) => entry.options.name === 'conversation.input.dock')
+  const dock = booted.registrations.find((entry) => entry.options.name === 'conversation.input.dock')
   assert.ok(dock, 'preview seat registered')
   assert.equal(dock.options.id, 'math-preview')
   assert.ok(dock.options.order < 20, 'renders above the shipped queue dock at order 20')
 })
 
-test('styles are prefixed so they cannot leak into the shell', () => {
-  const style = mod.internals.STYLE_TEXT
-  assert.ok(style.includes('.dshmr_bubble'))
-  assert.ok(!/\.xIFHsG_|\._8leB5q_/.test(style), 'no copied hashed selectors')
-  assert.ok(style.includes('--dsw-alias-label-primary'), 'rides shell tokens')
+test('never shadows the chat bubble any more', () => {
+  const seats = booted.registrations.map((entry) => entry.options.name)
+  assert.ok(!seats.includes('conversation.chat.node'), 'the shipped bubble keeps its cell')
+})
+
+test('a conflicting math rule is reported, not fatal', () => {
+  const original = console.warn
+  const warnings = []
+  console.warn = (...args) => warnings.push(args)
+  try {
+    const conflicting = boot({ duplicateRule: true })
+    assert.equal(warnings.length, 1, 'the duplicate is reported once')
+    assert.ok(String(warnings[0][0]).includes('could not register the math user-text rule'))
+    assert.equal(conflicting.registrations.length, 2, 'the node and preview seats still register')
+  } finally {
+    console.warn = original
+  }
+})
+
+test('styles are prefixed and scoped to what this bundle draws', () => {
+  assert.ok(STYLE_TEXT.includes('.dshmr_inlineMath'))
+  assert.ok(STYLE_TEXT.includes('.dshmr_displayMath'))
+  assert.ok(STYLE_TEXT.includes('.dshmr_preview'))
+  assert.ok(!STYLE_TEXT.includes('.dshmr_bubble'), 'no copied bubble geometry')
+  assert.ok(!STYLE_TEXT.includes('.dshmr_actions'), 'no copied copy-action geometry')
+  assert.ok(!/\.xIFHsG_|\._8leB5q_/.test(STYLE_TEXT), 'no copied hashed selectors')
+  assert.ok(STYLE_TEXT.includes('--dsw-alias-label-primary'), 'rides shell tokens')
 })
 
 //#endregion
 
 //#region Components
 
-const t = (key) => key
-const userSeat = registrations.find((entry) => entry.options.name === 'conversation.chat.node' && entry.options.key === 'user')
-const previewSeat = registrations.find((entry) => entry.options.name === 'conversation.input.dock')
-
-function renderBubble(text, extra = {}) {
-  return renderToStaticMarkup(React.createElement(userSeat.component, {
-    t,
-    renderMessageImages: () => null,
-    node: { data: Object.assign({ content: text === null ? [] : [{ type: 'text', text }], time: undefined }, extra) }
-  }))
+function renderNode(node, raw) {
+  return renderToStaticMarkup(React.createElement(MathTextNode, { node, raw }))
 }
 
-test('math in a user message routes through MarkdownText', () => {
-  const html = renderBubble('设 $a^2+b^2=c^2$ 成立')
-  assert.ok(html.includes('data-md'), 'the math segment reached the shell renderer')
+test('an inline math node routes its TeX through MarkdownText', () => {
+  const html = renderNode({ data: { tex: '$a^2+b^2=c^2$', display: false } }, '$a^2+b^2=c^2$')
+  assert.ok(html.includes('data-md'), 'the formula reached the shell renderer')
   assert.ok(html.includes('$a^2+b^2=c^2$'), 'delimiters survive so the renderer parses them')
-  assert.ok(html.includes('a^2'), 'and the plain prose run is still rendered')
-  assert.ok(html.includes('dshmr_inlineMath'), 'inline math renders inline')
+  assert.ok(html.includes('data-math-node="inline"'), 'inline math keeps the inline wrapper')
+  assert.ok(html.includes('dshmr_inlineMath'))
 })
 
-test('display math renders as a block', () => {
-  const html = renderBubble('before $$x^2$$ after')
+test('a display math node renders as a block', () => {
+  const html = renderNode({ data: { tex: '$$x^2$$', display: true } }, '$$x^2$$')
+  assert.ok(html.includes('data-math-node="display"'))
   assert.ok(html.includes('dshmr_displayMath'))
 })
 
-test('a message without math never touches MarkdownText', () => {
-  const html = renderBubble('plain prose only')
-  assert.ok(!html.includes('data-md'), 'no markdown rendering for plain user text')
-  assert.ok(html.includes('dshmr_bubble'))
-  assert.ok(html.includes('dshmr_actions'), 'the copy action row survives')
-  assert.ok(html.includes('dshmr_userRow'))
-})
-
-test('currency in a message stays prose', () => {
-  const html = renderBubble('costs $5 and $10')
-  assert.ok(!html.includes('data-md'))
-})
-
-test('an empty message renders no bubble', () => {
-  const html = renderBubble(null)
-  assert.ok(!html.includes('dshmr_bubble'))
-  assert.ok(html.includes('dshmr_userRow'))
+test('missing data falls back to the raw slice', () => {
+  const html = renderNode({ data: {} }, '$x$')
+  assert.ok(html.includes('data-md'))
+  assert.ok(html.includes('$x$'))
 })
 
 test('a malformed node degrades instead of throwing', () => {
-  assert.doesNotThrow(() => renderToStaticMarkup(React.createElement(userSeat.component, { t, node: {} })))
-  assert.doesNotThrow(() => renderToStaticMarkup(React.createElement(userSeat.component, { t, node: { data: { content: 'not-an-array' } } })))
-  assert.doesNotThrow(() => renderToStaticMarkup(React.createElement(userSeat.component, { t, node: { data: { content: [null, 42, { type: 'text' }] } } })))
-  assert.doesNotThrow(() => renderToStaticMarkup(React.createElement(userSeat.component, { node: { data: { content: [] } } })), 'missing translator')
+  assert.equal(renderNode({}, undefined), '')
+  assert.equal(renderNode({ data: { tex: '' } }, ''), '')
+  assert.doesNotThrow(() => renderNode({ data: null }, null))
+  assert.equal(renderToStaticMarkup(React.createElement(MathTextNode)), '', 'no props at all')
 })
 
-test('reference labels keep the shipped summary row', () => {
-  const html = renderBubble('hello @note.md', { referenceLabels: ['note.md'] })
-  assert.ok(html.includes('dshmr_referenceSummary'))
-})
-
-test('attachments render the shipped card geometry', () => {
-  const html = renderBubble('see this', { content: [] })
-  assert.ok(html.includes('dshmr_actions'))
-  const withFile = renderToStaticMarkup(React.createElement(userSeat.component, {
-    t,
-    renderMessageImages: () => null,
-    node: { data: { content: [{ type: 'file', attachment: { name: 'notes.pdf', bytes: 2048 } }] } }
-  }))
-  assert.ok(withFile.includes('dshmr_fileCard'))
-  assert.ok(withFile.includes('notes.pdf'))
-})
+const previewSeat = booted.registrations.find((entry) => entry.options.name === 'conversation.input.dock')
 
 test('preview renders the draft formulas and nothing else', () => {
-  const withMath = renderToStaticMarkup(React.createElement(previewSeat.component, { input: { draft: '求 $\\int_0^1 x^2 dx$ 的值' } }))
+  const withMath = renderToStaticMarkup(React.createElement(previewSeat.component, {
+    input: { draft: '求 $\\int_0^1 x^2 dx$ 的值' }
+  }))
   assert.ok(withMath.includes('data-math-preview'))
   assert.ok(withMath.includes('$\\int_0^1 x^2 dx$'))
   const withoutMath = renderToStaticMarkup(React.createElement(previewSeat.component, { input: { draft: 'no formula here' } }))
@@ -283,14 +371,22 @@ test('preview renders the draft formulas and nothing else', () => {
   assert.equal(noDraft, '', 'zero footprint without an input snapshot')
 })
 
+test('preview keeps a display formula on its own block', () => {
+  const html = renderToStaticMarkup(React.createElement(previewSeat.component, {
+    input: { draft: '$$\\frac{1}{2}$$' }
+  }))
+  assert.ok(html.includes('dshmr_previewBlock'))
+  assert.ok(html.includes('$$\\frac{1}{2}$$'))
+})
+
 //#endregion
 
-//#region Shadowing semantics, against the real registry when it is reachable
+//#region Keyed-seat semantics, against the real registry when it is reachable
 
 /**
- * The one claim that cannot be checked with a stub: that a `priority: -1` entry
- * actually wins the cell over the shipped `0` entry, and that abdicating hands
- * the cell back. Runs against the shipped SlotCore when its path is present.
+ * The claim a stub cannot check: `register({ name, key, priority })` on a keyed
+ * node slot projects one winner per key, and the shipped keys keep their own
+ * cells. Runs against the shipped SlotCore when its path exists.
  */
 let localSlotRegistry
 try {
@@ -314,111 +410,29 @@ for (const candidate of SLOT_REGISTRY_CANDIDATES) {
 }
 
 if (SlotCore === undefined) {
-  console.log('note: shipped slot registry not reachable — shadowing semantics were not re-checked here')
+  console.log('note: shipped slot registry not reachable — keyed-seat semantics were not re-checked here')
 } else {
-  test('priority -1 shadows the shipped bubble and abdicates back to it', () => {
+  test('the math key occupies one node cell without touching the shipped keys', () => {
     const slots = new SlotCore()
-    const shipped = () => null
-    const registered = { name: 'conversation.chat.node', key: 'user', locale: 'chat' }
-    slots.register({ name: 'root', children: { 'conversation.chat.node': { kind: 'keyed', scope: 'session' } } }, () => null)
-    slots.register(registered, shipped)
-    assert.equal(slots.entriesOfSlot('conversation.chat.node')[0].component, shipped, 'shipped entry holds the cell first')
+    slots.register({
+      name: 'root',
+      children: { 'conversation.user.text.node': { kind: 'keyed', scope: 'session' } }
+    }, () => null)
+    const textNode = () => null
+    const sessionNode = () => null
+    slots.register({ name: 'conversation.user.text.node', key: 'text', priority: 100 }, textNode)
+    slots.register({ name: 'conversation.user.text.node', key: 'session', priority: 100 }, sessionNode)
 
-    const occupant = registrations.find((entry) => entry.options.name === 'conversation.chat.node' && entry.options.key === 'user')
-    const dispose = slots.register(occupant.options, occupant.component)
-    const cell = slots.entriesOfSlot('conversation.chat.node')
-    assert.equal(cell.length, 1, 'the seat still projects one renderer per cell')
-    assert.equal(cell[0].component, occupant.component, 'the -1 entry wins the cell')
-    assert.equal(slots.entries('conversation.chat.node').length, 2, 'the shipped entry stays on the ledger')
-
-    slots.reportEntryError('conversation.chat.node', cell[0], new Error('boom'), { abdicate: true })
-    assert.equal(slots.entriesOfSlot('conversation.chat.node')[0].component, shipped, 'abdication hands the cell back')
+    const mathSeat = booted.registrations.find((entry) => entry.options.name === 'conversation.user.text.node')
+    const dispose = slots.register(mathSeat.options, mathSeat.component)
+    const heads = slots.entriesOfSlot('conversation.user.text.node')
+    assert.equal(heads.length, 3, 'one winner per key')
+    assert.equal(heads.find((entry) => entry.options.key === 'text').component, textNode, 'the plain-text seat survives')
+    assert.equal(heads.find((entry) => entry.options.key === 'session').component, sessionNode, 'the session seat survives')
+    assert.equal(heads.find((entry) => entry.options.key === 'math').component, mathSeat.component, 'math owns its own cell')
     dispose()
   })
 }
-
-//#region client-ui 0.2.x compatibility (icon seats renamed)
-
-/**
- * client-ui 0.2.x renamed the fixed-size icon seats
- * (`IconCopyOutline16` -> `IconCopyOutlineRegular` / `...Medium`).
- *
- * The bundle used to read the old names straight off the primitives table, so
- * on 0.2.x `BubbleActions` handed React an `undefined` component. React threw,
- * the slot boundary abdicated the entry, and the shipped user bubble took the
- * cell back: `$...$` rendered literally, while the draft preview (a different
- * seat, no icons) kept working. A plain-text bubble renders byte-for-byte
- * identically either way, so the breakage stayed invisible until a message
- * carried TeX.
- *
- * The stub in the region above still ships the 0.1.x names, which is precisely
- * why it could not catch this. These cases re-load the bundle against a
- * 0.2.x-shaped table, and against a table with no icon seats at all.
- */
-
-function loadUserSeat(primitivesTable) {
-  let registration
-  const sandbox = {
-    window: { __ModuleLoader__: { load: (value) => { registration = value } } },
-    console
-  }
-  vm.createContext(sandbox)
-  vm.runInContext(source, sandbox, { filename: 'client.js' })
-  const loaded = registration.factory((spec) => {
-    if (spec === 'react') return React
-    if (spec === '@deepseek-ai/dsh-client-ui-primitives') return primitivesTable
-    throw new Error(`unexpected require("${spec}")`)
-  })
-  const seats = []
-  loaded.apply({
-    slots: {
-      inject: (key, callback) => callback(),
-      register: (options, component) => { seats.push({ options, component }); return () => {} }
-    }
-  })
-  const seat = seats.find((entry) => entry.options.name === 'conversation.chat.node' && entry.options.key === 'user')
-  assert.ok(seat, 'the user seat is registered against the given primitives table')
-  return seat
-}
-
-function renderWith(seat, text) {
-  return renderToStaticMarkup(React.createElement(seat.component, {
-    t,
-    renderMessageImages: () => null,
-    node: { data: { content: [{ type: 'text', text }], time: undefined } }
-  }))
-}
-
-const primitives02x = Object.assign({}, primitives, {
-  IconCopyOutline16: undefined,
-  IconCheckOutline16: undefined,
-  IconCopyOutlineRegular: () => React.createElement('i'),
-  IconCheckOutlineRegular: () => React.createElement('i')
-})
-
-const seat02x = loadUserSeat(primitives02x)
-
-test('0.2.x icon names: a math bubble still routes through MarkdownText', () => {
-  const html = renderWith(seat02x, '设 $a^2+b^2=c^2$ 成立')
-  assert.ok(html.includes('data-md'), 'the math segment reached the shell renderer')
-  assert.ok(html.includes('dshmr_inlineMath'), 'inline math still renders inline')
-  assert.ok(html.includes('dshmr_bubble'), 'the plugin renderer still owns the bubble')
-})
-
-test('0.2.x icon names: a plain bubble still renders', () => {
-  const html = renderWith(seat02x, 'no math here')
-  assert.ok(html.includes('plain'), 'prose still goes through the shipped projection')
-})
-
-const seatNoIcons = loadUserSeat(Object.assign({}, primitives, {
-  IconCopyOutline16: undefined,
-  IconCheckOutline16: undefined
-}))
-
-test('no icon seat at all degrades instead of crashing', () => {
-  const html = renderWith(seatNoIcons, '$x$')
-  assert.ok(html.includes('dshmr_inlineMath'), 'the bubble still renders math with no icon seat available')
-})
 
 //#endregion
 

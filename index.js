@@ -1,8 +1,8 @@
 /**
  * dsh-math-render — host half.
  *
- * The plugin's whole behaviour lives in the browser half: both seats it
- * occupies are browser seats, and it needs no durable state. What the host
+ * The plugin's whole behaviour lives in the browser half: every seat it
+ * occupies is a browser seat, and it needs no durable state. What the host
  * half provides is the package anchor a Loader row resolves to — the client
  * module system reads the *same* package's `exports["./client"]` next to this
  * file — plus one read-only status route.
